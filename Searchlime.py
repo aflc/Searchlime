@@ -6,14 +6,21 @@ import fnmatch
 import time
 
 
-# TODO: import locally
-dist_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, dist_dir)
-import whoosh as wsh
-import whoosh.index
-import whoosh.fields
-import whoosh.qparser
-import whoosh.query
+def plugin_loaded():
+    import importlib
+    whoosh_libdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'whoosh_2_5_4')
+    wsh_loader = importlib.find_loader('whoosh', [whoosh_libdir])
+    wsh_loader.load_module()
+    import whoosh as wsh
+    import whoosh.index
+    import whoosh.fields
+    import whoosh.qparser
+    import whoosh.query
+    global SPLIT_LINENUM, SCHEMA
+    SPLIT_LINENUM = 10000
+    SCHEMA = wsh.fields.Schema(path=wsh.fields.ID(stored=True), mtime=wsh.fields.STORED, fsize=wsh.fields.STORED,
+                               data=wsh.fields.NGRAM(stored=True, phrase=True, minsize=1, maxsize=2),
+                               line_offset=wsh.fields.STORED)
 
 
 def is_enabled(window):
@@ -63,12 +70,6 @@ def load_options(window):
     return options
 
 
-SPLIT_LINENUM = 10000
-SCHEMA = wsh.fields.Schema(path=wsh.fields.ID(stored=True), mtime=wsh.fields.STORED, fsize=wsh.fields.STORED,
-                           data=wsh.fields.NGRAM(stored=True, phrase=True, minsize=1, maxsize=2),
-                           line_offset=wsh.fields.STORED)
-
-
 def readfile(path):
     try:
         data = open(path, encoding='utf-8').readlines()
@@ -108,7 +109,6 @@ def update_index_with_view(ix, view):
             doc = searcher.document(path=path)
             if not doc or doc['mtime'] != mtime or fsize != doc['fsize']:
                 writer.delete_by_term('path', path)
-                print('updating index: {}'.format(path))
                 for line_offset, data in readdata(view):
                     writer.add_document(path=path, data=data, line_offset=line_offset, mtime=mtime, fsize=fsize)
 
@@ -362,7 +362,6 @@ class SearchlimeUpdateEvent(sublime_plugin.EventListener):
     def on_load_async(self, view):
         window = view.window()
         if self.change_state(window):
-            print('update index start')
             window.run_command('searchlime_update_index')
 
     def on_post_save_async(self, view):
