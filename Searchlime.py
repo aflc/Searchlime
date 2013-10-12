@@ -91,8 +91,17 @@ def readdata(view):
 
 
 def update_index(ix, paths, callback=None):
+    paths = set(paths)
     with ix.searcher() as searcher:
         with ix.writer(limitmb=256) as writer:
+            # remove non-existing paths
+            remove_paths = []
+            for path in searcher.field_terms('path'):
+                if path not in paths:
+                    remove_paths.append(path)
+            for path in remove_paths:
+                writer.delete_by_term('path', path)
+            # update existing paths
             for path in paths:
                 fstat = os.stat(path)
                 mtime, fsize = fstat.st_mtime_ns, fstat.st_size
@@ -157,7 +166,8 @@ class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
         self.update_status()
         update_index(ix, paths, callback=self.increment_index_count)
         self.indexing = False
-        self.window.active_view().erase_status("Searchlime")
+        self.window.active_view().set_status("Searchlime", "update index finished.")
+
 
     def increment_index_count(self):
         self.num_files += 1
@@ -201,7 +211,7 @@ class SearchlimeReindexCommand(SearchlimeUpdateIndexCommand):
     def __init__(self, window):
         super().__init__(window)
 
-    def runIndexing(self):
+    def run_indexing(self):
         self.indexing = True
         opts = load_options(self.window)
 
@@ -231,9 +241,9 @@ class SearchlimeSearchCommand(sublime_plugin.WindowCommand):
 
     def run(self):
         view = self.window.active_view()
-        selectionText = view.substr(view.sel()[0])
+        selection_text = view.substr(view.sel()[0])
         if is_enabled(self.window):
-            self.window.show_input_panel("Searchlime:", selectionText or self.search_for, self.search, None, None)
+            self.window.show_input_panel("Searchlime:", selection_text or self.search_for, self.search, None, None)
             return
         sublime.error_message("Searchlime disabled")
 
@@ -374,7 +384,7 @@ class SearchlimeUpdateEvent(sublime_plugin.EventListener):
     current_project = None
     current_ix = None
 
-    def on_load_async(self, view):
+    def on_activated_async(self, view):
         window = view.window()
         if self.change_state(window):
             window.run_command('searchlime_update_index')
@@ -388,7 +398,7 @@ class SearchlimeUpdateEvent(sublime_plugin.EventListener):
     def change_state(self, window):
         projectname = os.path.basename(window.project_file_name())
         if projectname and projectname != self.current_project:
-            current_project = projectname
+            self.current_project = projectname
             opts = load_options(window)
             self.current_ix = open_ix(opts['indexdir'], projectname)
             return True
