@@ -39,3 +39,11 @@ How to use
 
 * Command `Searchlime search` > input your search word to an input panel > browse with quick panel
 * `ctrl+alt+s` for Windows/Linux, or `ctrl+super+s` for OSX is a default keybind of searching.
+
+
+License
+-------
+
+MIT license.
+
+(Included whoosh library is under 2-clause BSD license.)
