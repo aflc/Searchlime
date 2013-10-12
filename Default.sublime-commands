@@ -1,14 +1,14 @@
 [
   {
-    "caption": "searchlime recreate index",
+    "caption": "Searchlime recreate index",
     "command": "searchlime_reindex"
   },
   {
-    "caption": "searchlime update index",
+    "caption": "Searchlime update index",
     "command": "searchlime_update_index"
   },
   {
-    "caption": "searchlime search",
+    "caption": "Searchlime search",
     "command": "searchlime_search"
   }
  ]
