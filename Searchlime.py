@@ -1,4 +1,5 @@
-import sublime, sublime_plugin
+import sublime
+import sublime_plugin
 import os
 import threading
 import sys
@@ -6,6 +7,8 @@ import fnmatch
 import time
 
 wsh = None
+
+
 def plugin_loaded():
     global wsh
     import importlib
@@ -35,6 +38,7 @@ def is_enabled(window):
         return True
     return False
 
+
 def load_options(window):
     # loading
     settings = sublime.load_settings('Searchlime.sublime-settings')
@@ -62,7 +66,8 @@ def load_options(window):
     options['folders'] = []
     project_dir = os.path.dirname(window.project_file_name())
     for d in window.project_data().get('folders', []):
-        options['folders'].append({'path': os.path.join(project_dir, d['path']), 'follow_symlinks':d.get('follow_symlinks', False)})
+        options['folders'].append(
+            {'path': os.path.join(project_dir, d['path']), 'follow_symlinks': d.get('follow_symlinks', False)})
     # post process
     options['indexdir'] = os.path.expanduser(options['indexdir'])
     if not os.path.exists(options['indexdir']):
@@ -74,7 +79,7 @@ def readfile(path):
     try:
         data = open(path, encoding='utf-8').readlines()
         for i in range(0, len(data), SPLIT_LINENUM):
-            yield i * SPLIT_LINENUM, ''.join(data[i:i+SPLIT_LINENUM])
+            yield i * SPLIT_LINENUM, ''.join(data[i:i + SPLIT_LINENUM])
     except UnicodeDecodeError:
         pass
 
@@ -82,7 +87,7 @@ def readfile(path):
 def readdata(view):
     data = view.substr(sublime.Region(0, view.size())).splitlines()
     for i in range(0, len(data), SPLIT_LINENUM):
-        yield i * SPLIT_LINENUM, '\n'.join(data[i:i+SPLIT_LINENUM])
+        yield i * SPLIT_LINENUM, '\n'.join(data[i:i + SPLIT_LINENUM])
 
 
 def update_index(ix, paths, callback=None):
@@ -125,16 +130,18 @@ def open_ix(indexdir, name, create=False, recreate=False):
 
 
 class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
+
     def __init__(self, window):
         super().__init__(window)
+
     def run(self):
         if is_enabled(self.window):
-            indexThread = threading.Thread(target=self.runIndexing)
-            indexThread.start()
+            tr = threading.Thread(target=self.run_indexing)
+            tr.start()
         else:
             self.window.active_view().set_status("Searchlime", "Searchlime is disabled")
 
-    def runIndexing(self):
+    def run_indexing(self):
         self.indexing = True
         opts = load_options(self.window)
 
@@ -147,7 +154,7 @@ class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
             self.window.active_view().set_status("Searchlime", "indexdir open error")
         paths = list(self.get_files_in_project(opts))
         self.total_files = len(paths)
-        self.updateStatus()
+        self.update_status()
         update_index(ix, paths, callback=self.increment_index_count)
         self.indexing = False
         self.window.active_view().erase_status("Searchlime")
@@ -178,7 +185,7 @@ class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
                 return True
         return False
 
-    def updateStatus(self):
+    def update_status(self):
         if self.indexing:
             percent = 100.0
             if self.total_files > 0:
@@ -186,10 +193,11 @@ class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
             self.window.active_view().set_status(
                 "Searchlime",
                 "Searchlime indexing {}/{} files({} %)".format(self.num_files, self.total_files, int(percent)))
-            sublime.set_timeout(self.updateStatus, 2000)
+            sublime.set_timeout(self.update_status, 2000)
 
 
 class SearchlimeReindexCommand(SearchlimeUpdateIndexCommand):
+
     def __init__(self, window):
         super().__init__(window)
 
@@ -207,13 +215,14 @@ class SearchlimeReindexCommand(SearchlimeUpdateIndexCommand):
             self.window.active_view().set_status("Searchlime", "indexdir open error")
         paths = list(self.get_files_in_project(opts))
         self.total_files = len(paths)
-        self.updateStatus()
+        self.update_status()
         update_index(ix, paths, callback=self.increment_index_count)
         self.indexing = False
         self.window.active_view().erase_status("Searchlime")
 
 
 class SearchlimeSearchCommand(sublime_plugin.WindowCommand):
+
     def __init__(self, window):
         sublime_plugin.WindowCommand.__init__(self, window)
         self.searching = False
@@ -231,8 +240,8 @@ class SearchlimeSearchCommand(sublime_plugin.WindowCommand):
     def search(self, search_for):
         self.searching = True
         self.search_for = search_for
-        codeSearchThread = threading.Thread(target=self.run_search)
-        codeSearchThread.start()
+        tr = threading.Thread(target=self.run_search)
+        tr.start()
 
     def run_search(self):
         projectname = os.path.basename(self.window.project_file_name())
@@ -251,7 +260,8 @@ class SearchlimeSearchCommand(sublime_plugin.WindowCommand):
                 data = hit.get('data')
                 for linenum, line in self.search_lines(data):
                     linenum += hit.get('line_offset')
-                    self.items.append(['{} [{}]'.format(line.strip(), os.path.basename(gotpath)), '{}:{}'.format(linenum, gotpath)])
+                    self.items.append(
+                        ['{} [{}]'.format(line.strip(), os.path.basename(gotpath)), '{}:{}'.format(linenum, gotpath)])
                 if len(self.items) > 100000:
                     break
         self.current_view = self.window.active_view()
@@ -259,7 +269,6 @@ class SearchlimeSearchCommand(sublime_plugin.WindowCommand):
             self.window.show_quick_panel(self.items, self.on_done, 0, 0, self.on_highlighted)
         else:
             self.window.show_quick_panel(["No results"], self.on_done_none)
-
 
     def search_lines(self, data):
         idx = 0
@@ -344,8 +353,10 @@ def highlight_searchword(view, word):
     if not regions:
         regions = view.find_all(word)
     if len(regions) > 0:
-        view.add_regions("Searchlime_regions", regions, "entity.name.filename.find-in-files", "dot", sublime.DRAW_OUTLINED)
+        view.add_regions("Searchlime_regions", regions,
+                         "entity.name.filename.find-in-files", "dot", sublime.DRAW_OUTLINED)
         view.set_status("Searchlime_regions", "regions: " + str(len(regions)))
+
 
 def flush_key(view):
     view.erase_status("Searchlime")
