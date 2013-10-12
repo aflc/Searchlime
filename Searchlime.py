@@ -294,6 +294,8 @@ class SearchlimeSearchCommand(sublime_plugin.WindowCommand):
         if index == -1:
             self.window.focus_view(self.current_view)
             flush_key(self.current_view)
+            if self.active_view:
+                flush_key(self.active_view)
         else:
             item = self.items[index]
             linenum, path = item[1].rsplit(':', 1)
