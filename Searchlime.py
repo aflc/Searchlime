@@ -14,7 +14,7 @@ def plugin_loaded():
     import importlib
     whoosh_libdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'whoosh_2_5_4')
     wsh_loader = importlib.find_loader('whoosh', [whoosh_libdir])
-    wsh = wsh_loader.load_module()
+    wsh = wsh_loader.load_module('whoosh')
     import whoosh.index
     import whoosh.fields
     import whoosh.qparser
@@ -289,6 +289,8 @@ class SearchlimeSearchCommand(sublime_plugin.WindowCommand):
                     break
                 else:
                     idx = endofline + 1
+
+
 
     def on_done(self, index):
         if index == -1:
