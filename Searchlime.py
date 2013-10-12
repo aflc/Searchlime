@@ -168,7 +168,6 @@ class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
         self.indexing = False
         self.window.active_view().set_status("Searchlime", "update index finished.")
 
-
     def increment_index_count(self):
         self.num_files += 1
 
@@ -299,8 +298,6 @@ class SearchlimeSearchCommand(sublime_plugin.WindowCommand):
                     break
                 else:
                     idx = endofline + 1
-
-
 
     def on_done(self, index):
         if index == -1:
