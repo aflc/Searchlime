@@ -5,13 +5,13 @@ import sys
 import fnmatch
 import time
 
-
+wsh = None
 def plugin_loaded():
+    global wsh
     import importlib
     whoosh_libdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'whoosh_2_5_4')
     wsh_loader = importlib.find_loader('whoosh', [whoosh_libdir])
-    wsh_loader.load_module()
-    import whoosh as wsh
+    wsh = wsh_loader.load_module()
     import whoosh.index
     import whoosh.fields
     import whoosh.qparser
