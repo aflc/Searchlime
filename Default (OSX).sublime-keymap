@@ -1,3 +1,11 @@
 [
-    { "keys": ["ctrl+super+s"], "command": "searchlime_search" }
+    { "keys": ["ctrl+super+s"], "command": "searchlime_search" },
+    { "keys": ["ctrl+super+j"],
+      "command": "searchlime_next_result",
+      "context": [{"key": "searchlime_next_result"}]
+    },
+    { "keys": ["ctrl+super+i"],
+      "command": "searchlime_previous_result",
+      "context": [{"key": "searchlime_previous_result"}]
+    }
 ]

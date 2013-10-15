@@ -19,11 +19,9 @@ def plugin_loaded():
     import whoosh.fields
     import whoosh.qparser
     import whoosh.query
-    global SPLIT_LINENUM, SCHEMA
-    SPLIT_LINENUM = 10000
+    global SCHEMA
     SCHEMA = wsh.fields.Schema(path=wsh.fields.ID(stored=True), mtime=wsh.fields.STORED, fsize=wsh.fields.STORED,
-                               data=wsh.fields.NGRAM(stored=True, phrase=True, minsize=1, maxsize=2),
-                               line_offset=wsh.fields.STORED)
+                               data=wsh.fields.NGRAM(stored=False, phrase=True, minsize=2, maxsize=2))
 
 
 def care_path(path):
@@ -78,7 +76,8 @@ def load_options(window):
         options['folders'].append({'path': os.path.join(project_dir, d['path']),
                                   'follow_symlinks': d.get('follow_symlinks', False),
                                   'exclude_dirs': set(d.get('folder_exclude_patterns', [])),
-                                  'exclude_files': set(d.get('file_exclude_patterns', []))})
+                                  'exclude_files': set(d.get('file_exclude_patterns', [])),
+                                  'binary': set(d.get('binary', []))})
     # post process
     options['indexdir'] = os.path.expanduser(options['indexdir'])
     if not os.path.exists(options['indexdir']):
@@ -88,17 +87,13 @@ def load_options(window):
 
 def readfile(path):
     try:
-        data = open(path, encoding='utf-8').readlines()
-        for i in range(0, len(data), SPLIT_LINENUM):
-            yield i * SPLIT_LINENUM, ''.join(data[i:i + SPLIT_LINENUM])
+        return open(path, encoding='utf-8').read()
     except UnicodeDecodeError:
-        pass
+        return ''
 
 
 def readdata(view):
-    data = view.substr(sublime.Region(0, view.size())).splitlines()
-    for i in range(0, len(data), SPLIT_LINENUM):
-        yield i * SPLIT_LINENUM, '\n'.join(data[i:i + SPLIT_LINENUM])
+    return view.substr(sublime.Region(0, view.size()))
 
 
 def update_index(ix, paths, callback=None):
@@ -119,13 +114,19 @@ def update_index(ix, paths, callback=None):
                 doc = searcher.document(path=path)
                 if not doc or doc['mtime'] != mtime or fsize != doc['fsize']:
                     writer.delete_by_term('path', path)
-                    for line_offset, data in readfile(path):
-                        writer.add_document(path=path, data=data, line_offset=line_offset, mtime=mtime, fsize=fsize)
+                    data = readfile(path)
+                    if data:
+                        writer.add_document(path=path, data=data, mtime=mtime, fsize=fsize)
                 if callback:
                     callback()
 
 
 def update_index_with_view(ix, view):
+    opts = load_options(view.window())
+    paths = set(get_files_in_project(opts))
+    path = view.file_name()
+    if path not in paths:
+        return
     with ix.searcher() as searcher:
         with ix.writer(limitmb=256) as writer:
             path = view.file_name()
@@ -134,8 +135,8 @@ def update_index_with_view(ix, view):
             doc = searcher.document(path=path)
             if not doc or doc['mtime'] != mtime or fsize != doc['fsize']:
                 writer.delete_by_term('path', path)
-                for line_offset, data in readdata(view):
-                    writer.add_document(path=path, data=data, line_offset=line_offset, mtime=mtime, fsize=fsize)
+                data = readdata(view)
+                writer.add_document(path=path, data=data, mtime=mtime, fsize=fsize)
 
 
 def open_ix(indexdir, name, create=False, recreate=False):
@@ -147,6 +148,31 @@ def open_ix(indexdir, name, create=False, recreate=False):
         return wsh.index.open_dir(indexdir, indexname=name)
     elif create:
         return wsh.index.create_in(indexdir, SCHEMA, indexname=name)
+
+
+def get_files_in_project(opts):
+    visited = set()
+    for fdata in opts['folders']:
+        for root, dirs, filenames in os.walk(fdata['path'], followlinks=fdata['follow_symlinks']):
+            # remove dirs
+            for idx, d in enumerate(dirs):
+                if d in visited:
+                    dirs[idx] = None
+                if match_pattern(os.path.basename(d), opts['exclude_dirs'] | fdata['exclude_dirs']):
+                    dirs[idx] = None
+            while None in dirs:
+                dirs.remove(None)
+            visited.update(set(dirs))
+            for name in filenames:
+                if not match_pattern(name, opts['exclude_files'] | opts['binary'] | fdata['exclude_files'] | fdata['binary']):
+                    yield os.path.join(root, name)
+
+
+def match_pattern(s, patterns):
+    for pat in patterns:
+        if fnmatch.fnmatch(s, pat):
+            return True
+    return False
 
 
 class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
@@ -172,7 +198,7 @@ class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
         ix = open_ix(opts['indexdir'], projectname, create=True)
         if not ix:
             self.window.active_view().set_status("Searchlime", "indexdir open error")
-        paths = list(self.get_files_in_project(opts))
+        paths = list(get_files_in_project(opts))
         self.total_files = len(paths)
         self.update_status()
         update_index(ix, paths, callback=self.increment_index_count)
@@ -181,29 +207,6 @@ class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
 
     def increment_index_count(self):
         self.num_files += 1
-
-    def get_files_in_project(self, opts):
-        visited = set()
-        for fdata in opts['folders']:
-            for root, dirs, filenames in os.walk(fdata['path'], followlinks=fdata['follow_symlinks']):
-                # remove dirs
-                for idx, d in enumerate(dirs):
-                    if d in visited:
-                        dirs[idx] = None
-                    if self.match_pattern(os.path.basename(d), opts['exclude_dirs']):
-                        dirs[idx] = None
-                while None in dirs:
-                    dirs.remove(None)
-                visited.update(set(dirs))
-                for name in filenames:
-                    if not self.match_pattern(name, opts['exclude_files'] | opts['binary']):
-                        yield os.path.join(root, name)
-
-    def match_pattern(self, s, patterns):
-        for pat in patterns:
-            if fnmatch.fnmatch(s, pat):
-                return True
-        return False
 
     def update_status(self):
         if self.indexing:
@@ -233,7 +236,7 @@ class SearchlimeReindexCommand(SearchlimeUpdateIndexCommand):
         ix = open_ix(opts['indexdir'], projectname, recreate=True)
         if not ix:
             self.window.active_view().set_status("Searchlime", "indexdir open error")
-        paths = list(self.get_files_in_project(opts))
+        paths = list(get_files_in_project(opts))
         self.total_files = len(paths)
         self.update_status()
         update_index(ix, paths, callback=self.increment_index_count)
@@ -241,13 +244,49 @@ class SearchlimeReindexCommand(SearchlimeUpdateIndexCommand):
         self.window.active_view().erase_status("Searchlime")
 
 
+class SearchlimeEventListener(sublime_plugin.EventListener):
+
+    def on_query_context(self, view, key, operator, operand, match_all):
+        print("key:", key)
+        if key in ('searchlime_next_result', 'searchlime_previous_result'):
+            if SearchlimeSearchCommand.instance:
+                print("True")
+                return True
+        return False
+
+
+class SearchlimeNextResultCommand(sublime_plugin.WindowCommand):
+
+    def run(self):
+        ins = SearchlimeSearchCommand.instance
+        if ins and ins.found_regions:
+            if ins.region_index < len(ins.found_regions) - 1:
+                ins.region_index += 1
+                move_cursor_to_target(ins.active_view, ins.found_regions[ins.region_index])
+
+
+class SearchlimePreviousResultCommand(sublime_plugin.WindowCommand):
+
+    def run(self):
+        ins = SearchlimeSearchCommand.instance
+        if ins and ins.found_regions:
+            if ins.region_index > 0:
+                ins.region_index -= 1
+                move_cursor_to_target(ins.active_view, ins.found_regions[ins.region_index])
+
+
 class SearchlimeSearchCommand(sublime_plugin.WindowCommand):
+
+    instance = None
 
     def __init__(self, window):
         sublime_plugin.WindowCommand.__init__(self, window)
         self.searching = False
         self.search_for = ""
         self.active_view = None
+        self.found_regions = None
+        self.region_index = None
+        self.item_index = None
 
     def run(self):
         view = self.window.active_view()
@@ -274,41 +313,25 @@ class SearchlimeSearchCommand(sublime_plugin.WindowCommand):
         self.items = []
         parser = wsh.qparser.QueryParser('data', ix.schema)
         with ix.searcher() as searcher:
-            query = parser.parse('"{}"'.format(self.search_for))
+            if len(self.search_for) == 1:
+                query = wsh.query.Prefix('data', self.search_for)
+            else:
+                query = parser.parse('"{}"'.format(self.search_for))
             for hit in searcher.search(query):
-                gotpath = hit.get('path')
-                data = hit.get('data')
-                for linenum, line in self.search_lines(data):
-                    linenum += hit.get('line_offset')
-                    self.items.append(
-                        ['{} [{}]'.format(line.strip(), os.path.basename(gotpath)), '{}:{}'.format(linenum, gotpath)])
-                if len(self.items) > 100000:
+                self.items.append(hit.get('path'))
+                if len(self.items) > 10000:
                     break
         self.current_view = self.window.active_view()
-        if len(self.items) > 0:
-            self.window.show_quick_panel(self.items, self.on_done, 0, 0, self.on_highlighted)
+        if self.items:
+            self.__class__.instance = self
+        self.show_quick_panel()
+
+    def show_quick_panel(self, start=0):
+        if self.items:
+            self.item_index = start
+            self.window.show_quick_panel(self.items, self.on_done, 0, start, self.on_highlighted)
         else:
             self.window.show_quick_panel(["No results"], self.on_done_none)
-
-    def search_lines(self, data):
-        idx = 0
-        while True:
-            idx = data.find(self.search_for, idx)
-            if idx == -1:
-                break
-            else:
-                startofline = data.rfind('\n', 0, idx)
-                if startofline == -1:
-                    startofline = 0
-                else:
-                    startofline += 1
-                endofline = data.find('\n', idx + len(self.search_for))
-                linenum = data.count('\n', 0, startofline) + 1
-                yield linenum, data[startofline:endofline]
-                if endofline == -1:
-                    break
-                else:
-                    idx = endofline + 1
 
     def on_done(self, index):
         if index == -1:
@@ -317,52 +340,47 @@ class SearchlimeSearchCommand(sublime_plugin.WindowCommand):
             if self.active_view:
                 flush_key(self.active_view)
         else:
-            item = self.items[index]
-            linenum, path = item[1].rsplit(':', 1)
-            linenum = int(linenum)
-            view = self.window.open_file(path)
-            if self.active_view and self.active_view != view:
-                flush_key(self.active_view)
-            self.active_view = view
-            move_to_view_thread = threading.Thread(target=self.move_to_view, args=(self.active_view, linenum))
+            path = self.items[index]
+            if not self.active_view:
+                self.active_view = self.window.open_file(path)
+            move_to_view_thread = threading.Thread(target=self.move_to_view)
             move_to_view_thread.start()
+        self.__class__.instance = None
 
-    def move_to_view(self, view, linenum):
-        rg = self.show_view(view, linenum, highlight=False)
+    def move_to_view(self):
+        view = self.active_view
+        window = view.window()
+        # view = window.open_file(view.file_name())
+        while view.is_loading():
+            time.sleep(0.05)
+        rg = self.found_regions[self.region_index]
         sel = view.sel()
         sel.clear()
         sel.add(rg)
         flush_key(view)
+        view.show_at_center(rg)
 
-    def show_view(self, view, linenum, highlight=True):
+    def show_view(self, view):
         while view.is_loading():
             time.sleep(0.05)
-        topl = view.rowcol(view.visible_region().begin())[0]
-        bottoml = view.rowcol(view.visible_region().end())[0]
-        height = bottoml - topl
-        pt = view.text_point(linenum - 1, 0)
-        if highlight:
-            highlight_searchword(view, self.search_for)
-            view.add_regions('Searchlime_line', [view.line(pt)], 'comment', '', sublime.DRAW_NO_FILL)
-        csr_region = view.find(self.search_for, pt)
-        view.add_regions('Searchlime_csr', [csr_region], 'string', '', sublime.DRAW_NO_FILL)
-        topl = view.rowcol(view.visible_region().begin())[0]
-        view.show_at_center(view.text_point(linenum - height / 4, 0))
-        return csr_region
+        if self.active_view != view:
+            self.found_regions = view.find_all(self.search_for)
+            self.region_index = 0
+            if self.active_view:
+                flush_key(self.active_view)
+        self.active_view = view
+        highlight_regions(view, self.found_regions)
+        move_cursor_to_target(view, self.found_regions[self.region_index])
 
     def on_done_none(self, index):
         flush_key(self.current_view)
 
     def on_highlighted(self, index):
+        self.item_index = index
         if index != -1:
-            item = self.items[index]
-            linenum, path = item[1].split(':', 1)
-            linenum = int(linenum)
+            path = self.items[index]
             view = self.window.open_file(path, sublime.TRANSIENT)
-            if self.active_view and self.active_view != view:
-                flush_key(self.active_view)
-            self.active_view = view
-            show_view_thread = threading.Thread(target=self.show_view, args=(self.active_view, linenum))
+            show_view_thread = threading.Thread(target=self.show_view, args=(view,))
             show_view_thread.start()
             view.set_status("Searchlime", "search: {} found: {} files ".format(self.search_for, len(self.items)))
         else:
@@ -370,10 +388,17 @@ class SearchlimeSearchCommand(sublime_plugin.WindowCommand):
             flush_key(self.current_view)
 
 
-def highlight_searchword(view, word):
-    regions = view.get_regions('Searchlime_regions')
-    if not regions:
-        regions = view.find_all(word)
+def move_cursor_to_target(view, csr):
+    topl = view.rowcol(view.visible_region().begin())[0]
+    bottoml = view.rowcol(view.visible_region().end())[0]
+    height = bottoml - topl
+    view.add_regions('Searchlime_line', [view.line(csr)], 'comment', '', sublime.DRAW_NO_FILL)
+    view.add_regions('Searchlime_csr', [csr], 'string', '', sublime.DRAW_NO_FILL)
+    topl = view.rowcol(view.visible_region().begin())[0]
+    view.show_at_center(view.text_point(view.rowcol(csr.a)[0] - height / 4, 0))
+
+
+def highlight_regions(view, regions):
     if len(regions) > 0:
         view.add_regions("Searchlime_regions", regions,
                          "entity.name.filename.find-in-files", "dot", sublime.DRAW_OUTLINED)
@@ -398,19 +423,21 @@ class SearchlimeUpdateEvent(sublime_plugin.EventListener):
             window.run_command('searchlime_update_index')
 
     def on_post_save_async(self, view):
-        if not self.current_project:
+        if not self.__class__.current_project:
             self.change_state(view.window())
-        if self.current_ix:
-            update_index_with_view(self.current_ix, view)
+        if self.__class__.current_ix:
+            update_index_with_view(self.__class__.current_ix, view)
 
     def change_state(self, window):
+        if not window:
+            return False
         projectpath = window.project_file_name()
         if not projectpath:
             return False
         projectname = os.path.basename(window.project_file_name())
-        if projectname and projectname != self.current_project:
-            self.current_project = projectname
+        if projectname and projectname != self.__class__.current_project:
+            self.__class__.current_project = projectname
             opts = load_options(window)
-            self.current_ix = open_ix(opts['indexdir'], projectname)
+            self.__class__.current_ix = open_ix(opts['indexdir'], projectname)
             return True
         return False
