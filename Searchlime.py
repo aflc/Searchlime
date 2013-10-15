@@ -404,6 +404,9 @@ class SearchlimeUpdateEvent(sublime_plugin.EventListener):
             update_index_with_view(self.current_ix, view)
 
     def change_state(self, window):
+        projectpath = window.project_file_name()
+        if not projectpath:
+            return False
         projectname = os.path.basename(window.project_file_name())
         if projectname and projectname != self.current_project:
             self.current_project = projectname
