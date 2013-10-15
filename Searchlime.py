@@ -26,6 +26,15 @@ def plugin_loaded():
                                line_offset=wsh.fields.STORED)
 
 
+def care_path(path):
+    if sublime.platform() == 'windows':
+        if path[0] == '/' and len(path) > 1:
+            if path[1].isalnum():
+                if len(path) == 2 or path[2] == '/':
+                    path = '{}:/{}'.format(path[1], path[3:])
+    return os.path.normpath(path)
+
+
 def is_enabled(window):
     # local switch
     project_data = window.project_data()
@@ -66,8 +75,10 @@ def load_options(window):
     options['folders'] = []
     project_dir = os.path.dirname(window.project_file_name())
     for d in window.project_data().get('folders', []):
-        options['folders'].append(
-            {'path': os.path.join(project_dir, d['path']), 'follow_symlinks': d.get('follow_symlinks', False)})
+        options['folders'].append({'path': os.path.join(project_dir, d['path']),
+                                  'follow_symlinks': d.get('follow_symlinks', False),
+                                  'exclude_dirs': set(d.get('folder_exclude_patterns', [])),
+                                  'exclude_files': set(d.get('file_exclude_patterns', []))})
     # post process
     options['indexdir'] = os.path.expanduser(options['indexdir'])
     if not os.path.exists(options['indexdir']):
