@@ -8,6 +8,9 @@ import time
 
 wsh = None
 
+class Const():
+    now_indexing = False
+
 
 def plugin_loaded():
     global wsh
@@ -97,7 +100,6 @@ def readdata(view):
 
 
 def update_index(ix, paths, callback=None):
-    paths = set(paths)
     with ix.searcher() as searcher:
         with ix.writer(limitmb=256) as writer:
             # remove non-existing paths
@@ -123,7 +125,7 @@ def update_index(ix, paths, callback=None):
 
 def update_index_with_view(ix, view):
     opts = load_options(view.window())
-    paths = set(get_files_in_project(opts))
+    paths = SearchlimeUpdateIndexCommand.paths
     path = view.file_name()
     if path not in paths:
         return
@@ -165,7 +167,9 @@ def get_files_in_project(opts):
             visited.update(set(dirs))
             for name in filenames:
                 if not match_pattern(name, opts['exclude_files'] | opts['binary'] | fdata['exclude_files'] | fdata['binary']):
-                    yield os.path.join(root, name)
+                    path = os.path.join(root, name)
+                    print('[{}] to be indexed...'.format(path))
+                    yield path
 
 
 def match_pattern(s, patterns):
@@ -176,40 +180,39 @@ def match_pattern(s, patterns):
 
 
 class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
+    paths = set()
 
     def __init__(self, window):
         super().__init__(window)
 
     def run(self):
-        if is_enabled(self.window):
+        if is_enabled(self.window) and not Const.now_indexing:
+            Const.now_indexing = True
             tr = threading.Thread(target=self.run_indexing)
             tr.start()
         else:
             self.window.active_view().set_status("Searchlime", "Searchlime is disabled")
 
     def run_indexing(self):
-        self.indexing = True
         opts = load_options(self.window)
-
         self.total_files = 0
         self.num_files = 0
         projectname = os.path.basename(self.window.project_file_name())
-
         ix = open_ix(opts['indexdir'], projectname, create=True)
         if not ix:
             self.window.active_view().set_status("Searchlime", "indexdir open error")
-        paths = list(get_files_in_project(opts))
-        self.total_files = len(paths)
+        self.__class__.paths = set(get_files_in_project(opts))
+        self.total_files = len(self.__class__.paths)
         self.update_status()
-        update_index(ix, paths, callback=self.increment_index_count)
-        self.indexing = False
+        update_index(ix, self.__class__.paths, callback=self.increment_index_count)
+        Const.now_indexing = False
         self.window.active_view().set_status("Searchlime", "update index finished.")
 
     def increment_index_count(self):
         self.num_files += 1
 
     def update_status(self):
-        if self.indexing:
+        if Const.now_indexing:
             percent = 100.0
             if self.total_files > 0:
                 percent = self.num_files / self.total_files * 100
@@ -225,7 +228,6 @@ class SearchlimeReindexCommand(SearchlimeUpdateIndexCommand):
         super().__init__(window)
 
     def run_indexing(self):
-        self.indexing = True
         opts = load_options(self.window)
 
         self.total_files = 0
@@ -240,7 +242,7 @@ class SearchlimeReindexCommand(SearchlimeUpdateIndexCommand):
         self.total_files = len(paths)
         self.update_status()
         update_index(ix, paths, callback=self.increment_index_count)
-        self.indexing = False
+        Const.now_indexing = False
         self.window.active_view().erase_status("Searchlime")
 
 
@@ -426,7 +428,10 @@ class SearchlimeUpdateEvent(sublime_plugin.EventListener):
         if not self.__class__.current_project:
             self.change_state(view.window())
         if self.__class__.current_ix:
-            update_index_with_view(self.__class__.current_ix, view)
+            if not Const.now_indexing:
+                Const.now_indexing = True
+                update_index_with_view(self.__class__.current_ix, view)
+                Const.now_indexing = False
 
     def change_state(self, window):
         if not window:
