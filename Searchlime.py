@@ -3,17 +3,17 @@ import sublime_plugin
 import os
 import threading
 import sys
-import stat
-import fnmatch
 import time
+from .lime import DirectoryTree
 
 wsh = None
 
-class Const():
+class Const:
     now_indexing = False
     opts = None
     paths = {}
     ix = None
+    cache_ix = None
 
 
 def plugin_loaded():
@@ -29,6 +29,7 @@ def plugin_loaded():
     global SCHEMA
     SCHEMA = wsh.fields.Schema(path=wsh.fields.ID(stored=True), mtime=wsh.fields.STORED, fsize=wsh.fields.STORED,
                                data=wsh.fields.NGRAM(stored=False, phrase=True, minsize=2, maxsize=2))
+    Const.cache_ix = open_ix(load_index_dir(), '__Searchlime_cache__', create=True)
 
 
 def care_path(path):
@@ -66,12 +67,26 @@ def get_project_dir(window):
     return os.path.dirname(project_path)
 
 
+def load_index_dir():
+    settings = sublime.load_settings('Searchlime.sublime-settings')
+    index_dir = settings.get('indexdir')
+    if not index_dir:
+        return
+    index_dir = os.path.expanduser(index_dir)
+    if not os.path.exists(index_dir):
+        os.makedirs(index_dir)
+    return index_dir
+
+
 def load_options(window):
     # loading
+    options = {}
+    options['indexdir'] = load_index_dir()
+    if not options['indexdir']:
+        print('Searchlime: error: option "indexdir" not found')
+        return
     settings = sublime.load_settings('Searchlime.sublime-settings')
     global_settings = sublime.load_settings('Preferences.sublime-settings')
-    options = {}
-    options['indexdir'] = settings.get('indexdir')
     options['binary'] = global_settings.get('binary_file_patterns', [])
     options['exclude_files'] = global_settings.get('file_exclude_patterns', [])
     options['exclude_dirs'] = global_settings.get('folder_exclude_patterns', [])
@@ -81,7 +96,6 @@ def load_options(window):
     options['exclude_dirs'] += settings.get('folder_exclude_patterns', [])
     # update options with project settings
     project_settings = window.project_data().get('Searchlime', {})
-    options['indexdir'] = project_settings.get('indexdir', options['indexdir'])
     options['binary'] += project_settings.get('binary_file_patterns', [])
     options['exclude_files'] += project_settings.get('file_exclude_patterns', [])
     options['exclude_dirs'] += project_settings.get('folder_exclude_patterns', [])
@@ -97,15 +111,12 @@ def load_options(window):
     # dirs in project
     options['folders'] = []
     for d in window.project_data().get('folders', []):
-        options['folders'].append({'path': os.path.join(project_dir, d['path']),
-                                  'follow_symlinks': d.get('follow_symlinks', False),
-                                  'exclude_dirs': set(d.get('folder_exclude_patterns', [])),
-                                  'exclude_files': set(d.get('file_exclude_patterns', [])),
-                                  'binary': set(d.get('binary', []))})
-    # post process
-    options['indexdir'] = os.path.expanduser(options['indexdir'])
-    if not os.path.exists(options['indexdir']):
-        os.makedirs(options['indexdir'])
+        d['path'] = care_path(os.path.join(project_dir, d['path']))
+        d.setdefault('follow_symlinks', False)
+        d.setdefault('file_exclude_patterns', set())
+        d['file_exclude_patterns'].update(options['binary'])
+        d.setdefault('folder_exclude_patterns', set()).update(options['exclude_dirs'])
+        options['folders'].append(d)
     return options
 
 
@@ -150,12 +161,12 @@ def update_index_with_view(view):
     if not Const.opts:
         print('Searchlime: error: cannot find options')
         return
-    paths = Const.paths.get(Const.opts['project_name'])
-    if paths is None:
+    dt = Const.paths.get(Const.opts['project_name'])
+    if dt is None:
         print('Searchlime: error: cannot find files')
         return
     path = view.file_name()
-    if path not in paths:
+    if path not in dt.cached_items():
         return
     update_index([path], remove=False)
 
@@ -171,15 +182,11 @@ def open_ix(indexdir, name, create=False, recreate=False):
         return wsh.index.create_in(indexdir, SCHEMA, indexname=name)
 
 
-def load_files_in_project():
+def create_directory_tree():
     opts = Const.opts
     if not opts:
         print('Searchlime: error: cannot find options')
-    visited = set()
-    for fdata in opts['folders']:
-        exclude_file_pattern = opts['exclude_files'] | opts['binary'] | fdata['exclude_files'] | fdata['binary']
-        exclude_dir_pattern = opts['exclude_dirs'] | fdata['exclude_dirs']
-        yield from walk(fdata['path'], exclude_dirs=exclude_dir_pattern, exclude_files=exclude_file_pattern, followlinks=fdata['follow_symlinks'])
+    return DirectoryTree(opts['folders'])
 
 
 def walk(directory, exclude_dirs=set(), exclude_files=set(), followlinks=False):
@@ -188,7 +195,6 @@ def walk(directory, exclude_dirs=set(), exclude_files=set(), followlinks=False):
     while drs:
         newdrs = []
         for dr in drs:
-            print(dr)
             for entry in os.listdir(dr):
                 path = care_path(os.path.join(dr, entry))
                 st = os.stat(path)
@@ -236,11 +242,12 @@ class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
         self.num_files = 0
         projname = Const.opts['project_name']
         if projname not in Const.paths:
-            Const.paths[projname] = set(load_files_in_project())
-        paths = Const.paths[projname]
+            Const.paths[projname] = create_directory_tree()
+        dt = Const.paths[projname]
         Const.ix = open_ix(Const.opts['indexdir'], projname, create=True)
         if not Const.ix:
             self.window.active_view().set_status("Searchlime", "indexdir open error")
+        paths = dt.items()
         self.total_files = len(paths)
         self.update_status()
         update_index(paths, callback=self.increment_index_count)
@@ -275,13 +282,14 @@ class SearchlimeReindexCommand(SearchlimeUpdateIndexCommand):
         self.num_files = 0
         projname = Const.opts['project_name']
         if projname not in Const.paths:
-            Const.paths[projname] = set(load_files_in_project())
-        paths = Const.paths[projname]
+            Const.paths[projname] = create_directory_tree()
+        dt = Const.paths[projname]
         # reindex whole project
         ix = open_ix(opts['indexdir'], projectname, recreate=True)
         if not ix:
             self.window.active_view().set_status("Searchlime", "indexdir open error")
         Const.ix = ix
+        paths = dt.items()
         self.total_files = len(paths)
         self.update_status()
         update_index(paths, callback=self.increment_index_count)
@@ -292,10 +300,8 @@ class SearchlimeReindexCommand(SearchlimeUpdateIndexCommand):
 class SearchlimeEventListener(sublime_plugin.EventListener):
 
     def on_query_context(self, view, key, operator, operand, match_all):
-        print("key:", key)
         if key in ('searchlime_next_result', 'searchlime_previous_result'):
             if SearchlimeSearchCommand.instance:
-                print("True")
                 return True
         return False
 
@@ -409,13 +415,14 @@ class SearchlimeSearchCommand(sublime_plugin.WindowCommand):
         while view.is_loading():
             time.sleep(0.05)
         if self.active_view != view:
-            self.found_regions = view.find_all(self.search_for)
+            self.found_regions = view.find_all(self.search_for, sublime.IGNORECASE)
             self.region_index = 0
             if self.active_view:
                 flush_key(self.active_view)
         self.active_view = view
         highlight_regions(view, self.found_regions)
-        move_cursor_to_target(view, self.found_regions[self.region_index])
+        if self.found_regions:
+            move_cursor_to_target(view, self.found_regions[self.region_index])
 
     def on_done_none(self, index):
         flush_key(self.current_view)
