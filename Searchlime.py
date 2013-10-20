@@ -3,6 +3,7 @@ import sublime_plugin
 import os
 import threading
 import sys
+import stat
 import fnmatch
 import time
 
@@ -10,6 +11,9 @@ wsh = None
 
 class Const():
     now_indexing = False
+    opts = None
+    paths = {}
+    ix = None
 
 
 def plugin_loaded():
@@ -49,6 +53,19 @@ def is_enabled(window):
     return False
 
 
+def get_project_name(window):
+    project_path = window.project_file_name()
+    if not project_path:
+        return
+    return os.path.basename(project_path)
+
+def get_project_dir(window):
+    project_path = window.project_file_name()
+    if not project_path:
+        return
+    return os.path.dirname(project_path)
+
+
 def load_options(window):
     # loading
     settings = sublime.load_settings('Searchlime.sublime-settings')
@@ -72,9 +89,13 @@ def load_options(window):
     options['binary'] = set(options['binary'])
     options['exclude_files'] = set(options['exclude_files'])
     options['exclude_dirs'] = set(options['exclude_dirs'])
+    projname = get_project_name(window)
+    if not projname:
+        return
+    project_dir = get_project_dir(window)
+    options['project_name'] = projname
     # dirs in project
     options['folders'] = []
-    project_dir = os.path.dirname(window.project_file_name())
     for d in window.project_data().get('folders', []):
         options['folders'].append({'path': os.path.join(project_dir, d['path']),
                                   'follow_symlinks': d.get('follow_symlinks', False),
@@ -99,16 +120,18 @@ def readdata(view):
     return view.substr(sublime.Region(0, view.size()))
 
 
-def update_index(ix, paths, callback=None):
+def update_index(paths, callback=None, remove=True):
+    ix = Const.ix
     with ix.searcher() as searcher:
         with ix.writer(limitmb=256) as writer:
             # remove non-existing paths
-            remove_paths = []
-            for path in searcher.field_terms('path'):
-                if path not in paths:
-                    remove_paths.append(path)
-            for path in remove_paths:
-                writer.delete_by_term('path', path)
+            if remove:
+                remove_paths = []
+                for path in searcher.field_terms('path'):
+                    if path not in paths:
+                        remove_paths.append(path)
+                for path in remove_paths:
+                    writer.delete_by_term('path', path)
             # update existing paths
             for path in paths:
                 fstat = os.stat(path)
@@ -123,22 +146,18 @@ def update_index(ix, paths, callback=None):
                     callback()
 
 
-def update_index_with_view(ix, view):
-    opts = load_options(view.window())
-    paths = SearchlimeUpdateIndexCommand.paths
+def update_index_with_view(view):
+    if not Const.opts:
+        print('Searchlime: error: cannot find options')
+        return
+    paths = Const.paths.get(Const.opts['project_name'])
+    if paths is None:
+        print('Searchlime: error: cannot find files')
+        return
     path = view.file_name()
     if path not in paths:
         return
-    with ix.searcher() as searcher:
-        with ix.writer(limitmb=256) as writer:
-            path = view.file_name()
-            fstat = os.stat(path)
-            mtime, fsize = fstat.st_mtime_ns, fstat.st_size
-            doc = searcher.document(path=path)
-            if not doc or doc['mtime'] != mtime or fsize != doc['fsize']:
-                writer.delete_by_term('path', path)
-                data = readdata(view)
-                writer.add_document(path=path, data=data, mtime=mtime, fsize=fsize)
+    update_index([path], remove=False)
 
 
 def open_ix(indexdir, name, create=False, recreate=False):
@@ -152,36 +171,51 @@ def open_ix(indexdir, name, create=False, recreate=False):
         return wsh.index.create_in(indexdir, SCHEMA, indexname=name)
 
 
-def get_files_in_project(opts):
+def load_files_in_project():
+    opts = Const.opts
+    if not opts:
+        print('Searchlime: error: cannot find options')
     visited = set()
     for fdata in opts['folders']:
-        for root, dirs, filenames in os.walk(fdata['path'], followlinks=fdata['follow_symlinks']):
-            # remove dirs
-            for idx, d in enumerate(dirs):
-                if d in visited:
-                    dirs[idx] = None
-                if match_pattern(os.path.basename(d), opts['exclude_dirs'] | fdata['exclude_dirs']):
-                    dirs[idx] = None
-            while None in dirs:
-                dirs.remove(None)
-            visited.update(set(dirs))
-            for name in filenames:
-                if not match_pattern(name, opts['exclude_files'] | opts['binary'] | fdata['exclude_files'] | fdata['binary']):
-                    path = os.path.join(root, name)
-                    print('[{}] to be indexed...'.format(path))
-                    yield path
+        exclude_file_pattern = opts['exclude_files'] | opts['binary'] | fdata['exclude_files'] | fdata['binary']
+        exclude_dir_pattern = opts['exclude_dirs'] | fdata['exclude_dirs']
+        yield from walk(fdata['path'], exclude_dirs=exclude_dir_pattern, exclude_files=exclude_file_pattern, followlinks=fdata['follow_symlinks'])
+
+
+def walk(directory, exclude_dirs=set(), exclude_files=set(), followlinks=False):
+    drs = [directory]
+    visited = set(drs)
+    while drs:
+        newdrs = []
+        for dr in drs:
+            print(dr)
+            for entry in os.listdir(dr):
+                path = care_path(os.path.join(dr, entry))
+                st = os.stat(path)
+                if stat.S_ISLNK(st.st_mode) and not followlinks:
+                    continue
+                if stat.S_ISREG(st.st_mode):
+                    if not match_pattern(path, exclude_files):
+                        yield path
+                elif stat.S_ISDIR(st.st_mode):
+                    if path in visited:
+                        continue
+                    visited.add(path)
+                    if not match_pattern(path, exclude_dirs):
+                        newdrs.append(path)
+        drs = newdrs
 
 
 def match_pattern(s, patterns):
     for pat in patterns:
         if fnmatch.fnmatch(s, pat):
             return True
+        if s.endswith(pat):
+            return True
     return False
 
 
 class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
-    paths = set()
-
     def __init__(self, window):
         super().__init__(window)
 
@@ -194,19 +228,25 @@ class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
             self.window.active_view().set_status("Searchlime", "Searchlime is disabled")
 
     def run_indexing(self):
-        opts = load_options(self.window)
+        Const.opts = load_options(self.window)
+        if Const.opts is None:
+            print('Searchlime: cannnot load options')
+            return
         self.total_files = 0
         self.num_files = 0
-        projectname = os.path.basename(self.window.project_file_name())
-        ix = open_ix(opts['indexdir'], projectname, create=True)
-        if not ix:
+        projname = Const.opts['project_name']
+        if projname not in Const.paths:
+            Const.paths[projname] = set(load_files_in_project())
+        paths = Const.paths[projname]
+        Const.ix = open_ix(Const.opts['indexdir'], projname, create=True)
+        if not Const.ix:
             self.window.active_view().set_status("Searchlime", "indexdir open error")
-        self.__class__.paths = set(get_files_in_project(opts))
-        self.total_files = len(self.__class__.paths)
+        self.total_files = len(paths)
         self.update_status()
-        update_index(ix, self.__class__.paths, callback=self.increment_index_count)
+        update_index(paths, callback=self.increment_index_count)
         Const.now_indexing = False
         self.window.active_view().set_status("Searchlime", "update index finished.")
+
 
     def increment_index_count(self):
         self.num_files += 1
@@ -223,25 +263,28 @@ class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
 
 
 class SearchlimeReindexCommand(SearchlimeUpdateIndexCommand):
-
     def __init__(self, window):
         super().__init__(window)
 
     def run_indexing(self):
-        opts = load_options(self.window)
-
+        Const.opts = load_options(self.window)
+        if Const.opts is None:
+            print('Searchlime: cannnot load options')
+            return
         self.total_files = 0
         self.num_files = 0
-        projectname = os.path.basename(self.window.project_file_name())
-
+        projname = Const.opts['project_name']
+        if projname not in Const.paths:
+            Const.paths[projname] = set(load_files_in_project())
+        paths = Const.paths[projname]
         # reindex whole project
         ix = open_ix(opts['indexdir'], projectname, recreate=True)
         if not ix:
             self.window.active_view().set_status("Searchlime", "indexdir open error")
-        paths = list(get_files_in_project(opts))
+        Const.ix = ix
         self.total_files = len(paths)
         self.update_status()
-        update_index(ix, paths, callback=self.increment_index_count)
+        update_index(paths, callback=self.increment_index_count)
         Const.now_indexing = False
         self.window.active_view().erase_status("Searchlime")
 
@@ -305,13 +348,13 @@ class SearchlimeSearchCommand(sublime_plugin.WindowCommand):
         tr.start()
 
     def run_search(self):
-        projectname = os.path.basename(self.window.project_file_name())
-        opts = load_options(self.window)
-        if wsh.index.exists_in(opts['indexdir'], indexname=projectname):
-            ix = wsh.index.open_dir(opts['indexdir'], indexname=projectname)
-        else:
+        ix = Const.ix
+        if ix is None:
             sublime.error_message("Searchlime indexdir not founed")
             return
+        opts = Const.opts
+        if opts is None:
+            print('Searchlime: error: cannot find options')
         self.items = []
         parser = wsh.qparser.QueryParser('data', ix.schema)
         with ix.searcher() as searcher:
@@ -416,33 +459,37 @@ def flush_key(view):
 
 
 class SearchlimeUpdateEvent(sublime_plugin.EventListener):
-    current_project = None
-    current_ix = None
-
     def on_activated_async(self, view):
         window = view.window()
-        if self.change_state(window):
+        if self.will_be_call(window):
             window.run_command('searchlime_update_index')
 
-    def on_post_save_async(self, view):
-        if not self.__class__.current_project:
-            self.change_state(view.window())
-        if self.__class__.current_ix:
-            if not Const.now_indexing:
-                Const.now_indexing = True
-                update_index_with_view(self.__class__.current_ix, view)
-                Const.now_indexing = False
 
-    def change_state(self, window):
+    def on_post_save_async(self, view):
+        window = view.window()
+        if self.can_update_view_of_index(window):
+            Const.now_indexing = True
+            update_index_with_view(view)
+            Const.now_indexing = False
+
+
+    def can_update_view_of_index(self, window):
+        if window and Const.opts and Const.ix and not Const.now_indexing:
+            projname = get_project_name(window)
+            if not projname:
+                return False
+            if projname == Const.opts['project_name']:
+                return True
+        return False
+
+    def will_be_call(self, window):
         if not window:
             return False
-        projectpath = window.project_file_name()
-        if not projectpath:
+        projname = get_project_name(window)
+        if not projname:
             return False
-        projectname = os.path.basename(window.project_file_name())
-        if projectname and projectname != self.__class__.current_project:
-            self.__class__.current_project = projectname
-            opts = load_options(window)
-            self.__class__.current_ix = open_ix(opts['indexdir'], projectname)
+        if not Const.opts or projname != Const.opts['project_name']:
+            Const.opts = load_options(window)
+            if not Const.opts:
+                return False
             return True
-        return False
