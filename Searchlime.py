@@ -11,9 +11,20 @@ wsh = None
 class Const:
     now_indexing = False
     opts = None
-    paths = {}
     ix = None
     cache_ix = None
+
+
+def get_dirtree(projname):
+    with Const.cache_ix.searcher() as searcher:
+        try:
+            return searcher.document(name=projname)
+        except KeyError:
+            return None
+
+def set_dirtree(projname, dt):
+    with Const.cache_ix.writer() as writer:
+        writer.add_document(name=projname, tree=dt)
 
 
 def plugin_loaded():
@@ -29,7 +40,9 @@ def plugin_loaded():
     global SCHEMA
     SCHEMA = wsh.fields.Schema(path=wsh.fields.ID(stored=True), mtime=wsh.fields.STORED, fsize=wsh.fields.STORED,
                                data=wsh.fields.NGRAM(stored=False, phrase=True, minsize=2, maxsize=2))
-    Const.cache_ix = open_ix(load_index_dir(), '__Searchlime_cache__', create=True)
+    Const.cache_ix = open_ix(load_index_dir(), '__Searchlime_cache__', create=True,
+                             schema=wsh.fields.Schema(name=wsh.fields.ID(stored=True), tree=wsh.fields.STORED)
+                             )
 
 
 def care_path(path):
@@ -94,15 +107,18 @@ def load_options(window):
     options['binary'] += settings.get('binary_file_patterns', [])
     options['exclude_files'] += settings.get('file_exclude_patterns', [])
     options['exclude_dirs'] += settings.get('folder_exclude_patterns', [])
+    options['include_patterns'] = settings.get('include_patterns', [])
     # update options with project settings
     project_settings = window.project_data().get('Searchlime', {})
     options['binary'] += project_settings.get('binary_file_patterns', [])
     options['exclude_files'] += project_settings.get('file_exclude_patterns', [])
     options['exclude_dirs'] += project_settings.get('folder_exclude_patterns', [])
+    options['include_patterns'] += project_settings.get('include_patterns', [])
     # merge duplicated patterns
     options['binary'] = set(options['binary'])
     options['exclude_files'] = set(options['exclude_files'])
     options['exclude_dirs'] = set(options['exclude_dirs'])
+    options['include_patterns'] = set(options['include_patterns'])
     projname = get_project_name(window)
     if not projname:
         return
@@ -113,9 +129,13 @@ def load_options(window):
     for d in window.project_data().get('folders', []):
         d['path'] = care_path(os.path.join(project_dir, d['path']))
         d.setdefault('follow_symlinks', False)
-        d.setdefault('file_exclude_patterns', set())
+        d['file_exclude_patterns'] = set(d.get('file_exclude_patterns', []))
+        d['file_exclude_patterns'].update(options['exclude_files'])
         d['file_exclude_patterns'].update(options['binary'])
-        d.setdefault('folder_exclude_patterns', set()).update(options['exclude_dirs'])
+        d['folder_exclude_patterns'] = set(d.get('folder_exclude_patterns', []))
+        d['folder_exclude_patterns'].update(options['exclude_dirs'])
+        d['include_patterns'] = set(d.get('include_patterns', []))
+        d['include_patterns'].update(options['include_patterns'])
         options['folders'].append(d)
     return options
 
@@ -161,7 +181,7 @@ def update_index_with_view(view):
     if not Const.opts:
         print('Searchlime: error: cannot find options')
         return
-    dt = Const.paths.get(Const.opts['project_name'])
+    dt = get_dirtree(Const.opts['project_name'])
     if dt is None:
         print('Searchlime: error: cannot find files')
         return
@@ -171,15 +191,17 @@ def update_index_with_view(view):
     update_index([path], remove=False)
 
 
-def open_ix(indexdir, name, create=False, recreate=False):
+def open_ix(indexdir, name, create=False, recreate=False, schema=None):
+    if schema is None:
+        schema = SCHEMA
     if not name:
         return None
     if recreate:
-        return wsh.index.create_in(indexdir, SCHEMA, indexname=name)
+        return wsh.index.create_in(indexdir, schema, indexname=name)
     elif wsh.index.exists_in(indexdir, indexname=name):
         return wsh.index.open_dir(indexdir, indexname=name)
     elif create:
-        return wsh.index.create_in(indexdir, SCHEMA, indexname=name)
+        return wsh.index.create_in(indexdir, schema, indexname=name)
 
 
 def create_directory_tree():
@@ -226,10 +248,11 @@ class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
         super().__init__(window)
 
     def run(self):
-        if is_enabled(self.window) and not Const.now_indexing:
-            Const.now_indexing = True
-            tr = threading.Thread(target=self.run_indexing)
-            tr.start()
+        if is_enabled(self.window):
+            if not Const.now_indexing:
+                Const.now_indexing = True
+                tr = threading.Thread(target=self.run_indexing)
+                tr.start()
         else:
             self.window.active_view().set_status("Searchlime", "Searchlime is disabled")
 
@@ -241,13 +264,15 @@ class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
         self.total_files = 0
         self.num_files = 0
         projname = Const.opts['project_name']
-        if projname not in Const.paths:
-            Const.paths[projname] = create_directory_tree()
-        dt = Const.paths[projname]
         Const.ix = open_ix(Const.opts['indexdir'], projname, create=True)
         if not Const.ix:
             self.window.active_view().set_status("Searchlime", "indexdir open error")
+        dt = get_dirtree(projname)
+        if not dt:
+            dt = create_directory_tree()
+        self.window.active_view().set_status("Searchlime", "Scan project tree...")
         paths = dt.items()
+        set_dirtree(projname, dt)
         self.total_files = len(paths)
         self.update_status()
         update_index(paths, callback=self.increment_index_count)
@@ -281,15 +306,17 @@ class SearchlimeReindexCommand(SearchlimeUpdateIndexCommand):
         self.total_files = 0
         self.num_files = 0
         projname = Const.opts['project_name']
-        if projname not in Const.paths:
-            Const.paths[projname] = create_directory_tree()
-        dt = Const.paths[projname]
         # reindex whole project
         ix = open_ix(opts['indexdir'], projectname, recreate=True)
         if not ix:
             self.window.active_view().set_status("Searchlime", "indexdir open error")
         Const.ix = ix
+        dt = get_dirtree(projname)
+        if not dt:
+            dt = create_directory_tree()
+        self.window.active_view().set_status("Searchlime", "Scan project tree...")
         paths = dt.items()
+        set_dirtree(projname, dt)
         self.total_files = len(paths)
         self.update_status()
         update_index(paths, callback=self.increment_index_count)
