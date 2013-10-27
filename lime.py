@@ -26,10 +26,10 @@ class DirectoryTree:
     def set_info(self, info):
         self.info = info
 
-    def cached_items(self):
+    def cached_paths(self):
         return self.item_cache
 
-    def items(self):
+    def paths(self):
         ''' treeをtop downで走査して返す。返り値はファイルリスト。
         ただしキャッシュが古く、同名のディレクトリである可能性がある。
         '''
@@ -41,7 +41,7 @@ class DirectoryTree:
             while drs:
                 newdrs = []
                 for dr in drs:
-                    cache = self.tree_cache.get(dr, {})
+                    cache = self.tree_cache.setdefault(dr, {})
                     # directoryが本当にdirectoryかチェックする
                     try:
                         entries = os.listdir(dr)
@@ -60,20 +60,29 @@ class DirectoryTree:
                                 continue  # symlinkを辿らない
                             elif tp[0] == 'file':
                                 if not match_pattern(path, info['file_exclude_patterns']):
+                                    print('[{}] will be indexed'.format(path))
                                     items.append(path)
                             continue
                     for path in paths:
+                        basename = os.path.basename(path)
                         # それぞれのエントリーをキャッシュから検索
-                        tp = cache.setdefault(path, check_type(path))
+                        if path not in cache:
+                            cache[path] = check_type(path)
+                        tp = cache[path]
                         if not tp:
                             continue
                         if not info['follow_symlinks'] and tp[1]:
                             continue  # symlinkを辿らない
                         if tp[0] == 'file':
-                            if not match_pattern(path, info['file_exclude_patterns']):
+                            # includeがあるときはこっち優先
+                            if info['include_patterns']:
+                                if not match_pattern(basename, info['include_patterns']):
+                                    continue
+                            if not match_pattern(basename, info['file_exclude_patterns']):
+                                print('[{}] will be indexed'.format(path))
                                 items.append(path)
                         elif tp[0] == 'dir':
-                            if not match_pattern(path, info['folder_exclude_patterns']):
+                            if not match_pattern(basename, info['folder_exclude_patterns']):
                                 newdrs.append(path)
                 drs = newdrs
         self.item_cache = items
