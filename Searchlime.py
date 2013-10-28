@@ -186,7 +186,7 @@ def update_index_with_view(view):
         print('Searchlime: error: cannot find files')
         return
     path = view.file_name()
-    if path not in dt.cached_items():
+    if path not in dt.cached_paths():
         return
     update_index([path], remove=False)
 
@@ -271,7 +271,7 @@ class SearchlimeUpdateIndexCommand(sublime_plugin.WindowCommand):
         if not dt:
             dt = create_directory_tree()
         self.window.active_view().set_status("Searchlime", "Scan project tree...")
-        paths = dt.items()
+        paths = dt.paths()
         set_dirtree(projname, dt)
         self.total_files = len(paths)
         self.update_status()
@@ -315,7 +315,7 @@ class SearchlimeReindexCommand(SearchlimeUpdateIndexCommand):
         if not dt:
             dt = create_directory_tree()
         self.window.active_view().set_status("Searchlime", "Scan project tree...")
-        paths = dt.items()
+        paths = dt.paths()
         set_dirtree(projname, dt)
         self.total_files = len(paths)
         self.update_status()
